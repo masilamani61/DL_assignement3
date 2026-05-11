@@ -4,6 +4,7 @@ DA6401 Assignment 3: "Attention Is All You Need"
 """
 
 import math
+import os
 from collections import Counter
 from typing import Optional
 
@@ -20,6 +21,28 @@ try:
     import wandb
 except ImportError:  # pragma: no cover - optional dependency
     wandb = None
+
+
+def maybe_login_wandb() -> bool:
+    """
+    Log into Weights & Biases if an API key is available.
+
+    Expected environment variables:
+        WANDB_API_KEY  : W&B API key
+        WANDB_DISABLED : set to 'true' to disable W&B entirely
+    """
+    if wandb is None:
+        return False
+
+    if os.getenv("WANDB_DISABLED", "").lower() in {"true", "1", "yes"}:
+        return False
+
+    api_key = os.getenv("WANDB_API_KEY")
+    if not api_key:
+        return False
+
+    wandb.login(key=api_key, relogin=True)
+    return True
 
 
 class LabelSmoothingLoss(nn.Module):
@@ -272,8 +295,9 @@ def run_training_experiment() -> None:
     }
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    use_wandb = maybe_login_wandb()
     run = None
-    if wandb is not None:
+    if wandb is not None and use_wandb:
         run = wandb.init(project="da6401-a3", config=config)
 
     train_loader, val_loader, test_loader, assets = get_dataloaders(batch_size=config["batch_size"])
