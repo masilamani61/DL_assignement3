@@ -276,7 +276,7 @@ class Transformer(nn.Module):
         if checkpoint_path is not None:
             if gdown is None:
                 raise ImportError("gdown is required when checkpoint_path is provided.")
-            gdown.download(id="<.pth drive id>", output=checkpoint_path, quiet=False)
+            gdown.download(id="1hYsQhTN-XsTVOb_I22XCwCIEhziWg0", output=checkpoint_path, quiet=False)
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             self.load_state_dict(state_dict)
