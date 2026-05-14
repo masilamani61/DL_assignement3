@@ -240,6 +240,7 @@ class Transformer(nn.Module):
 
         checkpoint = None
         if checkpoint_path is not None:
+            
             if gdown is None:
                 raise ImportError("gdown is required.")
             gdown.download(id="11az1iZ3vFSVaF2T6iH6Mr2VpegQ2gEpE", output=checkpoint_path, quiet=False)

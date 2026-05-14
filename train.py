@@ -282,8 +282,8 @@ def run_training_experiment() -> None:
     Set up and run the full training experiment.
     """
     config = {
-        "batch_size": 32,
-        "num_epochs": 5,
+        "batch_size": 64,
+        "num_epochs": 15,
         "d_model": 256,
         "N": 4,
         "num_heads": 8,
@@ -291,7 +291,7 @@ def run_training_experiment() -> None:
         "dropout": 0.1,
         "warmup_steps": 4000,
         "learning_rate": 1.0,
-        "checkpoint_path": "checkpoint.pt",
+        "checkpoint_path": "checkpoint_train.pt",
     }
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -331,11 +331,13 @@ def run_training_experiment() -> None:
         pad_idx=tgt_vocab["<pad>"],
         smoothing=0.1,
     )
-
+    best_val_loss = float("inf")
     for epoch in range(config["num_epochs"]):
         train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, True, device)
         val_loss = run_epoch(val_loader, model, loss_fn, None, None, epoch, False, device)
-        save_checkpoint(model, optimizer, scheduler, epoch, path=config["checkpoint_path"])
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint(model, optimizer, scheduler, epoch, path=config["checkpoint_path"])
         if run is not None:
             wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
 
