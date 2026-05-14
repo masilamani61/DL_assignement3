@@ -3,7 +3,7 @@ import torch
 from dataset import get_dataloaders
 
 # Load your old checkpoint
-ckpt = torch.load("checkpoint_train.pt", map_location="cpu")
+ckpt = torch.load("checkpoint_best.pt", map_location="cpu")
 
 # Build vocab
 _, _, _, assets = get_dataloaders(batch_size=1)

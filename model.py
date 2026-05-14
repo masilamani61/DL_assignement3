@@ -86,20 +86,15 @@ class MultiHeadAttention(nn.Module):
         x = x.transpose(1, 2).contiguous()
         return x.view(batch_size, seq_len, self.d_model)
 
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    def forward(self, query, key, value, mask=None):
         q = self._split_heads(self.W_q(query))
         k = self._split_heads(self.W_k(key))
         v = self._split_heads(self.W_v(value))
-        # CORRECT:
+        
+        # MUST be like this - use attended directly, NOT dropout(attn_weights) @ v
         attended, _ = scaled_dot_product_attention(q, k, v, mask)
+        attended = self.dropout(attended)   # dropout on output, not weights
         attended = self._combine_heads(attended)
-        return self.W_o(attended)
         return self.W_o(attended)
 
 
@@ -346,12 +341,16 @@ class Transformer(nn.Module):
 
         from train import greedy_decode
 
-        src_tokens = ["<sos>"] + self.src_tokenizer(src_sentence) + ["<eos>"]
+        src_tokens = self.src_tokenizer(src_sentence)  # just tokenize, no special tokens
         unk_idx = self.src_vocab["<unk>"]
-        src_ids = [self.src_vocab[token] if token in self.src_vocab else unk_idx for token in src_tokens]
-        src = torch.tensor(src_ids, dtype=torch.long, device=self.device).unsqueeze(0)
-        src_mask = make_src_mask(src, pad_idx=self.src_vocab["<pad>"])
+        pad_idx = self.src_vocab["<pad>"]
 
+        src_ids = [self.src_vocab["<sos>"]]  # add <sos> index directly
+        src_ids += [self.src_vocab[t] if t in self.src_vocab else unk_idx for t in src_tokens]
+        src_ids += [self.src_vocab["<eos>"]]  # add <eos> index directly
+
+        src = torch.tensor(src_ids, dtype=torch.long, device=self.device).unsqueeze(0)
+        src_mask = make_src_mask(src, pad_idx=pad_idx)
         decoded = greedy_decode(
             self,
             src,

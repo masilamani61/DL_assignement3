@@ -188,55 +188,80 @@ def _corpus_bleu(references, hypotheses) -> float:
     return score * 100.0
 
 
-def evaluate_bleu(
-    model: Transformer,
-    test_dataloader: DataLoader,
-    tgt_vocab,
-    device: str = "cpu",
-    max_len: int = 100,
-) -> float:
-    """
-    Evaluate translation quality with corpus-level BLEU score.
-    """
+def evaluate_bleu(model, test_dataloader, tgt_vocab, device="cpu", max_len=50):
     sos_idx = _lookup_index(tgt_vocab, "<sos>")
     eos_idx = _lookup_index(tgt_vocab, "<eos>")
     pad_idx = _lookup_index(tgt_vocab, "<pad>")
-
     references = []
     hypotheses = []
     model.eval()
 
     with torch.no_grad():
         for src, tgt in tqdm(test_dataloader, desc="bleu", leave=False):
-            src = src.to(device)
-            tgt = tgt.to(device)
-            src_mask = make_src_mask(src, pad_idx=pad_idx)
-            decoded = greedy_decode(model, src, src_mask, max_len, sos_idx, eos_idx, device=device)
+            for i in range(src.size(0)):
+                src_i = src[i].unsqueeze(0).to(device)
+                tgt_i = tgt[i].unsqueeze(0).to(device)
+                src_mask = make_src_mask(src_i, pad_idx=pad_idx)
 
-            ref_tokens = []
-            for idx in tgt.squeeze(0).tolist():
-                token = _lookup_token(tgt_vocab, idx)
-                if token in {"<sos>", "<pad>"}:
-                    continue
-                if token == "<eos>":
-                    break
-                ref_tokens.append(token)
+                # Use beam search instead of greedy
+                decoded = beam_search_decode(
+                    model, src_i, src_mask, max_len,
+                    sos_idx, eos_idx, device, beam_size=4
+                )
 
-            hyp_tokens = []
-            for idx in decoded.squeeze(0).tolist():
-                token = _lookup_token(tgt_vocab, idx)
-                if token in {"<sos>", "<pad>"}:
-                    continue
-                if token == "<eos>":
-                    break
-                hyp_tokens.append(token)
+                ref_tokens = []
+                for idx in tgt_i.squeeze(0).tolist():
+                    token = _lookup_token(tgt_vocab, idx)
+                    if token in {"<sos>", "<pad>"}: continue
+                    if token == "<eos>": break
+                    ref_tokens.append(token)
 
-            references.append(ref_tokens)
-            hypotheses.append(hyp_tokens)
+                hyp_tokens = []
+                for idx in decoded.squeeze(0).tolist():
+                    token = _lookup_token(tgt_vocab, idx)
+                    if token in {"<sos>", "<pad>"}: continue
+                    if token == "<eos>": break
+                    hyp_tokens.append(token)
+
+                references.append(ref_tokens)
+                hypotheses.append(hyp_tokens)
 
     return _corpus_bleu(references, hypotheses)
 
 
+def beam_search_decode(model, src, src_mask, max_len, start_symbol, end_symbol, device, beam_size=4):
+    model.eval()
+    with torch.no_grad():
+        memory = model.encode(src, src_mask)
+        beams = [(0.0, torch.full((1,1), start_symbol, dtype=torch.long, device=device))]
+        completed = []
+
+        for _ in range(max_len - 1):
+            new_beams = []
+            for score, ys in beams:
+                tgt_mask = make_tgt_mask(ys)
+                out = model.decode(memory, src_mask, ys, tgt_mask)
+                log_probs = torch.log_softmax(out[:, -1, :], dim=-1)
+                topk_probs, topk_ids = log_probs.topk(beam_size)
+
+                for i in range(beam_size):
+                    new_token = topk_ids[0, i].unsqueeze(0).unsqueeze(0)
+                    new_score = score + topk_probs[0, i].item()
+                    new_ys = torch.cat([ys, new_token], dim=1)
+                    if new_token.item() == end_symbol:
+                        completed.append((new_score / new_ys.size(1), new_ys))
+                    else:
+                        new_beams.append((new_score, new_ys))
+
+            new_beams.sort(key=lambda x: x[0] / x[1].size(1), reverse=True)
+            beams = new_beams[:beam_size]
+            if not beams or len(completed) >= beam_size:
+                break
+
+        if completed:
+            completed.sort(key=lambda x: x[0], reverse=True)
+            return completed[0][1]
+        return beams[0][1] if beams else torch.full((1,1), end_symbol, dtype=torch.long, device=device)
 def save_checkpoint(
     model: Transformer,
     optimizer: torch.optim.Optimizer,
@@ -282,24 +307,20 @@ def run_training_experiment() -> None:
     Set up and run the full training experiment.
     """
     config = {
-        "batch_size": 64,
-        "num_epochs": 15,
-        "d_model": 256,
-        "N": 4,
-        "num_heads": 8,
-        "d_ff": 1024,
-        "dropout": 0.1,
-        "warmup_steps": 4000,
-        "learning_rate": 1.0,
-        "checkpoint_path": "checkpoint_train.pt",
-    }
+    "batch_size": 128,
+    "num_epochs": 5,
+    "d_model": 256,
+    "N": 3,
+    "num_heads": 8,
+    "d_ff": 512,
+    "dropout": 0.1,
+    "warmup_steps": 2000,   # smaller dataset needs fewer warmup steps
+    "learning_rate": 1.0,
+    "checkpoint_path": "checkpoint_best.pt",
+}
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    use_wandb = maybe_login_wandb()
-    run = None
-    if wandb is not None and use_wandb:
-        run = wandb.init(project="da6401-a3", config=config)
-
+    run = wandb.init(project="da6401-a3", config=config)
     train_loader, val_loader, test_loader, assets = get_dataloaders(batch_size=config["batch_size"])
     src_vocab = assets["src_vocab"]
     tgt_vocab = assets["tgt_vocab"]
@@ -331,16 +352,23 @@ def run_training_experiment() -> None:
         pad_idx=tgt_vocab["<pad>"],
         smoothing=0.1,
     )
-    best_val_loss = float("inf")
+    best_bleu = 0.0
+
     for epoch in range(config["num_epochs"]):
         train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, True, device)
-        val_loss = run_epoch(val_loader, model, loss_fn, None, None, epoch, False, device)
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        val_loss   = run_epoch(val_loader,   model, loss_fn, None,      None,      epoch, False, device)
+        
+        # Evaluate BLEU on validation every epoch
+        bleu = evaluate_bleu(model, val_loader, tgt_vocab, device=device)
+        print(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, BLEU={bleu:.2f}")
+        
+        if bleu > best_bleu:
+            best_bleu = bleu
             save_checkpoint(model, optimizer, scheduler, epoch, path=config["checkpoint_path"])
+            print(f"  → Best BLEU so far: {best_bleu:.2f}, saved.")
+        
         if run is not None:
-            wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
-
+            wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "bleu": bleu})
     bleu = evaluate_bleu(model, test_loader, tgt_vocab, device=device)
     if run is not None:
         wandb.log({"test_bleu": bleu})
