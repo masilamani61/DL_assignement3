@@ -278,14 +278,9 @@ class Transformer(nn.Module):
         if checkpoint is not None:
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             self.load_state_dict(state_dict)
-        if checkpoint is not None:
-            state_dict = checkpoint.get("model_state_dict", checkpoint)
-            self.load_state_dict(state_dict)
 
-            # Auto-build inference assets so infer() works without manual setup
-            from dataset import get_dataloaders
+            # Load vocab directly from checkpoint (no dataset download needed)
             import spacy
-
             def _load_tokenizer(model_name, lang_code):
                 try:
                     nlp = spacy.load(model_name)
@@ -293,14 +288,12 @@ class Transformer(nn.Module):
                     nlp = spacy.blank(lang_code)
                 return lambda text: [tok.text.lower() for tok in nlp(text.strip()) if tok.text.strip()]
 
-            _, _, _, assets = get_dataloaders(batch_size=1)
-            self.src_vocab      = assets["src_vocab"]
-            self.tgt_vocab      = assets["tgt_vocab"]
-            self.src_tokenizer  = assets["src_tokenizer"]
-            self.tgt_tokenizer  = assets["tgt_tokenizer"]
-            self.device         = "cuda" if torch.cuda.is_available() else "cpu"
+            self.src_vocab     = checkpoint["src_vocab"]
+            self.tgt_vocab     = checkpoint["tgt_vocab"]
+            self.src_tokenizer = _load_tokenizer("de_core_news_sm", "de")
+            self.tgt_tokenizer = _load_tokenizer("en_core_web_sm", "en")
+            self.device        = "cuda" if torch.cuda.is_available() else "cpu"
             self.to(self.device)
-
     def _reset_parameters(self) -> None:
         for param in self.parameters():
             if param.dim() > 1:
