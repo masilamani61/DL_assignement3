@@ -226,26 +226,37 @@ class Transformer(nn.Module):
     """Full encoder-decoder Transformer for machine translation."""
 
     def __init__(
-        self,
-        src_vocab_size: int,
-        tgt_vocab_size: int,
-        d_model: int = 512,
-        N: int = 6,
-        num_heads: int = 8,
-        d_ff: int = 2048,
-        dropout: float = 0.1,
-        checkpoint_path: str = None,
-    ) -> None:
+    self,
+    src_vocab_size: int = None,
+    tgt_vocab_size: int = None,
+    d_model: int = 512,
+    N: int = 6,
+    num_heads: int = 8,
+    d_ff: int = 2048,
+    dropout: float = 0.1,
+    checkpoint_path: str = "checkpoint.pt",
+) -> None:
         super().__init__()
 
+        checkpoint = None
+        if checkpoint_path is not None:
+            if gdown is None:
+                raise ImportError("gdown is required.")
+            gdown.download(id="1hYsQhTN-XsTVOb_I22XCwCIEhziWg0to", output=checkpoint_path, quiet=False)
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+            cfg = checkpoint.get("model_config", {})
+            src_vocab_size = src_vocab_size or cfg["src_vocab_size"]
+            tgt_vocab_size = tgt_vocab_size or cfg["tgt_vocab_size"]
+            d_model   = cfg.get("d_model",   d_model)
+            N         = cfg.get("N",         N)
+            num_heads = cfg.get("num_heads", num_heads)
+            d_ff      = cfg.get("d_ff",      d_ff)
+            dropout   = cfg.get("dropout",   dropout)
+
         self.config = {
-            "src_vocab_size": src_vocab_size,
-            "tgt_vocab_size": tgt_vocab_size,
-            "d_model": d_model,
-            "N": N,
-            "num_heads": num_heads,
-            "d_ff": d_ff,
-            "dropout": dropout,
+            "src_vocab_size": src_vocab_size, "tgt_vocab_size": tgt_vocab_size,
+            "d_model": d_model, "N": N, "num_heads": num_heads,
+            "d_ff": d_ff, "dropout": dropout,
         }
         self.d_model = d_model
         self.src_vocab_size = src_vocab_size
@@ -264,11 +275,7 @@ class Transformer(nn.Module):
 
         self._reset_parameters()
 
-        if checkpoint_path is not None:
-            if gdown is None:
-                raise ImportError("gdown is required when checkpoint_path is provided.")
-            gdown.download(id="1hYsQhTN-XsTVOb_I22XCwCIEhziWg0to", output=checkpoint_path, quiet=False)
-            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        if checkpoint is not None:
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             self.load_state_dict(state_dict)
 
