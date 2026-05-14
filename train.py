@@ -283,7 +283,7 @@ def run_training_experiment() -> None:
     """
     config = {
         "batch_size": 32,
-        "num_epochs": 10,
+        "num_epochs": 5,
         "d_model": 256,
         "N": 4,
         "num_heads": 8,
