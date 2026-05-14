@@ -28,26 +28,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def scaled_dot_product_attention(
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    mask: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Compute Scaled Dot-Product Attention.
-
-        Attention(Q, K, V) = softmax( Q·Kᵀ / √dₖ ) · V
-    """
+def scaled_dot_product_attention(Q, K, V, mask=None, dropout=None):
     dk = Q.size(-1)
     attn_logits = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(dk)
     if mask is not None:
         attn_logits = attn_logits.masked_fill(mask, float("-inf"))
     attn_weights = F.softmax(attn_logits, dim=-1)
     attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+    if dropout is not None:
+        attn_weights = dropout(attn_weights)
     output = torch.matmul(attn_weights, V)
     return output, attn_weights
-
 
 def make_src_mask(
     src: torch.Tensor,
@@ -105,10 +96,10 @@ class MultiHeadAttention(nn.Module):
         q = self._split_heads(self.W_q(query))
         k = self._split_heads(self.W_k(key))
         v = self._split_heads(self.W_v(value))
-
-        attended, attn_weights = scaled_dot_product_attention(q, k, v, mask)
-        attended = self.dropout(attn_weights) @ v
+        # CORRECT:
+        attended, _ = scaled_dot_product_attention(q, k, v, mask)
         attended = self._combine_heads(attended)
+        return self.W_o(attended)
         return self.W_o(attended)
 
 
