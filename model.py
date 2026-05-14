@@ -242,7 +242,7 @@ class Transformer(nn.Module):
         if checkpoint_path is not None:
             if gdown is None:
                 raise ImportError("gdown is required.")
-            gdown.download(id="1hYsQhTN-XsTVOb_I22XCwCIEhziWg0to", output=checkpoint_path, quiet=False)
+            gdown.download(id="11az1iZ3vFSVaF2T6iH6Mr2VpegQ2gEpE", output=checkpoint_path, quiet=False)
             checkpoint = torch.load(checkpoint_path, map_location="cpu")
             cfg = checkpoint.get("model_config", {})
             src_vocab_size = src_vocab_size or cfg["src_vocab_size"]
