@@ -352,8 +352,6 @@ class Transformer(nn.Module):
         )
 
         words = []
-        print(src)
-        print(decoded)
 
         for idx in decoded.squeeze(0).tolist():
             token = self.tgt_vocab.lookup_token(idx)
