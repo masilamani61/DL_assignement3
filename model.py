@@ -92,8 +92,9 @@ class MultiHeadAttention(nn.Module):
         v = self._split_heads(self.W_v(value))
         
         # MUST be like this - use attended directly, NOT dropout(attn_weights) @ v
-        attended, _ = scaled_dot_product_attention(q, k, v, mask)
-        attended = self.dropout(attended)   # dropout on output, not weights
+        attended, _ = scaled_dot_product_attention(
+    q, k, v, mask, self.dropout
+)# dropout on output, not weights
         attended = self._combine_heads(attended)
         return self.W_o(attended)
 
@@ -351,6 +352,9 @@ class Transformer(nn.Module):
         )
 
         words = []
+        print(src)
+        print(decoded)
+
         for idx in decoded.squeeze(0).tolist():
             token = self.tgt_vocab.lookup_token(idx)
             if token in {"<sos>", "<pad>"}: continue

@@ -309,15 +309,15 @@ def run_training_experiment() -> None:
     Set up and run the full training experiment.
     """
     config = {
-    "batch_size": 64,      # not 124
-    "num_epochs": 10,      # not 50
-    "d_model": 256,
-    "N": 3,                # not 4
+    "batch_size": 64,
+    "num_epochs": 2,
+    "d_model": 512,
+    "N": 6,
     "num_heads": 8,
-    "d_ff": 1024,
-    "dropout": 0.1,        # not 0.2
-    "warmup_steps": 4000,  # not 2000
-    "learning_rate": 1.0,
+    "d_ff": 2048,
+    "dropout": 0.3,
+    "warmup_steps": 4000,
+    "learning_rate": 0.9,
     "checkpoint_path": "checkpoint_best.pt",
 }
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -335,6 +335,7 @@ def run_training_experiment() -> None:
         num_heads=config["num_heads"],
         d_ff=config["d_ff"],
         dropout=config["dropout"],
+        
     ).to(device)
     model.src_vocab = src_vocab
     model.tgt_vocab = tgt_vocab
@@ -347,7 +348,7 @@ def run_training_experiment() -> None:
         lr=config["learning_rate"],
         betas=(0.9, 0.98),
         eps=1e-9,
-        weight_decay=1e-4,
+        weight_decay=0,
     )
     scheduler = NoamScheduler(optimizer, d_model=config["d_model"], warmup_steps=config["warmup_steps"])
     loss_fn = LabelSmoothingLoss(
