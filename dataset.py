@@ -72,7 +72,7 @@ class Multi30kDataset:
             return pair["de"], pair["en"]
         return sample["de"], sample["en"]
 
-    def build_vocab(self, min_freq: int = 1):
+    def build_vocab(self, min_freq: int = 3):
         """
         Builds the vocabulary mapping for src (de) and tgt (en), including:
         <unk>, <pad>, <sos>, <eos>

@@ -11,6 +11,7 @@ _, _, _, assets = get_dataloaders(batch_size=1)
 # Add vocab to checkpoint
 ckpt["src_vocab"] = assets["src_vocab"]
 ckpt["tgt_vocab"] = assets["tgt_vocab"]
+print(ckpt["tgt_vocab"].lookup_token(0))
 
 # Save back
 torch.save(ckpt, "checkpoint_with_vocab.pt")

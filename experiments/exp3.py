@@ -128,7 +128,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    wandb.login(key=WANDB_API_KEY)
+    # wandb.login(key=WANDB_API_KEY)
     run = wandb.init(
         project=WANDB_PROJECT,
         name="attention-head-heatmaps",

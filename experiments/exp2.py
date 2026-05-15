@@ -194,7 +194,7 @@ def train_with_grad_logging(
     loss_fn, train_loader, val_loader,
     config, device,
 ):
-    wandb.login(key=WANDB_API_KEY)
+    
     run = wandb.init(
         project=WANDB_PROJECT,
         name=run_name,

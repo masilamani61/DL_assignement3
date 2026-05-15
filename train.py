@@ -310,16 +310,18 @@ def run_training_experiment() -> None:
     """
     config = {
     "batch_size": 64,
-    "num_epochs": 2,
-    "d_model": 512,
-    "N": 6,
+    "num_epochs": 30,
+    "d_model": 256,
+    "N": 4,
     "num_heads": 8,
-    "d_ff": 2048,
-    "dropout": 0.3,
+    "d_ff": 1024,
+    "dropout": 0.1,
     "warmup_steps": 4000,
-    "learning_rate": 0.9,
+    "learning_rate": 1.0,
     "checkpoint_path": "checkpoint_best.pt",
 }
+
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     run = wandb.init(project="da6401-a3", config=config)
@@ -335,7 +337,7 @@ def run_training_experiment() -> None:
         num_heads=config["num_heads"],
         d_ff=config["d_ff"],
         dropout=config["dropout"],
-        
+        checkpoint_path=None
     ).to(device)
     model.src_vocab = src_vocab
     model.tgt_vocab = tgt_vocab
@@ -375,7 +377,7 @@ def run_training_experiment() -> None:
         #     wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "bleu": bleu})
         # else:
         wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})  
-    bleu = evaluate_bleu(model, test_loader, tgt_vocab, device=device)
+    bleu = evaluate_bleu(load_checkpoint(config["checkpoint_path"]), test_loader, tgt_vocab, device=device)
     if run is not None:
         wandb.log({"test_bleu": bleu})
         run.finish()
