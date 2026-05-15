@@ -327,7 +327,7 @@ class Transformer(nn.Module):
         return self.decode(memory, src_mask, tgt, tgt_mask)
 
     def infer(self, src_sentence: str) -> str:
-        from train import beam_search_decode
+        from train import greedy_decode
 
         device = next(self.parameters()).device
 
@@ -342,13 +342,12 @@ class Transformer(nn.Module):
         src = torch.tensor(src_ids, dtype=torch.long, device=device).unsqueeze(0)
         src_mask = make_src_mask(src, pad_idx=pad_idx)
 
-        decoded = beam_search_decode(
+        decoded = greedy_decode(
             self, src, src_mask,
-            max_len=100,
+            max_len=50,          # ← reduce from 100 to 50
             start_symbol=self.tgt_vocab["<sos>"],
             end_symbol=self.tgt_vocab["<eos>"],
             device=device,
-            beam_size=4,
         )
 
         words = []
