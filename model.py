@@ -229,7 +229,7 @@ class Transformer(nn.Module):
     num_heads: int = 8,
     d_ff: int = 2048,
     dropout: float = 0.1,
-    checkpoint_path: str = None,
+    checkpoint_path: str = 'checkpoint.pt',
 ) -> None:
         super().__init__()
 
