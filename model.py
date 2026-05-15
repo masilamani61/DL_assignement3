@@ -229,7 +229,7 @@ class Transformer(nn.Module):
     num_heads: int = 8,
     d_ff: int = 2048,
     dropout: float = 0.1,
-    checkpoint_path: str = "checkpoint.pt",
+    checkpoint_path: str = None,
 ) -> None:
         super().__init__()
 
@@ -238,7 +238,7 @@ class Transformer(nn.Module):
             
             if gdown is None:
                 raise ImportError("gdown is required.")
-            gdown.download(id="11az1iZ3vFSVaF2T6iH6Mr2VpegQ2gEpE", output=checkpoint_path, quiet=False)
+            gdown.download(id="1GmTFbDtIcmjduAnY_nDjRJ9B1sQxRYfN", output=checkpoint_path, quiet=False)
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
             cfg = checkpoint.get("model_config", {})
             src_vocab_size = src_vocab_size or cfg["src_vocab_size"]
@@ -327,46 +327,34 @@ class Transformer(nn.Module):
         return self.decode(memory, src_mask, tgt, tgt_mask)
 
     def infer(self, src_sentence: str) -> str:
-        """
-        Translate a German sentence using greedy autoregressive decoding.
-        """
-        if not all(
-            hasattr(self, attr)
-            for attr in ("src_vocab", "tgt_vocab", "src_tokenizer", "tgt_tokenizer", "device")
-        ):
-            raise ValueError(
-                "Inference assets missing. Attach src_vocab, tgt_vocab, src_tokenizer, "
-                "tgt_tokenizer, and device to the model before calling infer()."
-            )
-
         from train import greedy_decode
 
-        src_tokens = self.src_tokenizer(src_sentence)  # just tokenize, no special tokens
+        # Get actual device from model parameters, not stored self.device
+        device = next(self.parameters()).device
+
+        src_tokens = self.src_tokenizer(src_sentence)
         unk_idx = self.src_vocab["<unk>"]
         pad_idx = self.src_vocab["<pad>"]
 
-        src_ids = [self.src_vocab["<sos>"]]  # add <sos> index directly
+        src_ids  = [self.src_vocab["<sos>"]]
         src_ids += [self.src_vocab[t] if t in self.src_vocab else unk_idx for t in src_tokens]
-        src_ids += [self.src_vocab["<eos>"]]  # add <eos> index directly
+        src_ids += [self.src_vocab["<eos>"]]
 
-        src = torch.tensor(src_ids, dtype=torch.long, device=self.device).unsqueeze(0)
+        src = torch.tensor(src_ids, dtype=torch.long, device=device).unsqueeze(0)
         src_mask = make_src_mask(src, pad_idx=pad_idx)
+
         decoded = greedy_decode(
-            self,
-            src,
-            src_mask,
+            self, src, src_mask,
             max_len=100,
             start_symbol=self.tgt_vocab["<sos>"],
             end_symbol=self.tgt_vocab["<eos>"],
-            device=self.device,
+            device=device,
         )
 
         words = []
         for idx in decoded.squeeze(0).tolist():
             token = self.tgt_vocab.lookup_token(idx)
-            if token in {"<sos>", "<pad>"}:
-                continue
-            if token == "<eos>":
-                break
+            if token in {"<sos>", "<pad>"}: continue
+            if token == "<eos>": break
             words.append(token)
         return " ".join(words)

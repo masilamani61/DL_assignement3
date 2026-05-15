@@ -279,6 +279,8 @@ def save_checkpoint(
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
             "model_config": model.config,
+            "src_vocab": model.src_vocab,   # ← ADD THIS
+            "tgt_vocab": model.tgt_vocab
         },
         path,
     )
@@ -293,7 +295,7 @@ def load_checkpoint(
     """
     Restore model (and optionally optimizer/scheduler) state from disk.
     """
-    checkpoint = torch.load(path, map_location="cpu")
+    checkpoint = torch.load(path, map_location="cpu",weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     if optimizer is not None and checkpoint.get("optimizer_state_dict") is not None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -307,14 +309,14 @@ def run_training_experiment() -> None:
     Set up and run the full training experiment.
     """
     config = {
-    "batch_size": 128,
-    "num_epochs": 5,
+    "batch_size": 64,      # not 124
+    "num_epochs": 10,      # not 50
     "d_model": 256,
-    "N": 3,
+    "N": 3,                # not 4
     "num_heads": 8,
-    "d_ff": 512,
-    "dropout": 0.1,
-    "warmup_steps": 2000,   # smaller dataset needs fewer warmup steps
+    "d_ff": 1024,
+    "dropout": 0.1,        # not 0.2
+    "warmup_steps": 4000,  # not 2000
     "learning_rate": 1.0,
     "checkpoint_path": "checkpoint_best.pt",
 }
@@ -345,6 +347,7 @@ def run_training_experiment() -> None:
         lr=config["learning_rate"],
         betas=(0.9, 0.98),
         eps=1e-9,
+        weight_decay=1e-4,
     )
     scheduler = NoamScheduler(optimizer, d_model=config["d_model"], warmup_steps=config["warmup_steps"])
     loss_fn = LabelSmoothingLoss(
@@ -352,23 +355,25 @@ def run_training_experiment() -> None:
         pad_idx=tgt_vocab["<pad>"],
         smoothing=0.1,
     )
+    best_val_loss = float("inf")
     best_bleu = 0.0
 
     for epoch in range(config["num_epochs"]):
         train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler, epoch, True, device)
-        val_loss   = run_epoch(val_loader,   model, loss_fn, None,      None,      epoch, False, device)
-        
-        # Evaluate BLEU on validation every epoch
-        bleu = evaluate_bleu(model, val_loader, tgt_vocab, device=device)
-        print(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, BLEU={bleu:.2f}")
-        
-        if bleu > best_bleu:
-            best_bleu = bleu
+        val_loss   = run_epoch(val_loader,   model, loss_fn, None, None, epoch, False, device)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             save_checkpoint(model, optimizer, scheduler, epoch, path=config["checkpoint_path"])
-            print(f"  → Best BLEU so far: {best_bleu:.2f}, saved.")
+            print(f"Epoch {epoch}: train={train_loss:.4f} val={val_loss:.4f} → best saved")
         
-        if run is not None:
-            wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "bleu": bleu})
+        # BLEU only every 5 epochs for speed
+        # if (epoch + 1) % 5 == 0:
+        #     bleu = evaluate_bleu(model, test_loader, tgt_vocab, device=device)
+        #     print(f"Epoch {epoch}: BLEU={bleu:.2f}")
+        #     wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "bleu": bleu})
+        # else:
+        wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})  
     bleu = evaluate_bleu(model, test_loader, tgt_vocab, device=device)
     if run is not None:
         wandb.log({"test_bleu": bleu})
