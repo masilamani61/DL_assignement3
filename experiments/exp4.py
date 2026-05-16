@@ -1,29 +1,36 @@
 """
-exp4_pe_vs_learned.py
-Section 2.4 — Positional Encoding vs. Learned Embeddings
-Trains two models:
-  1. Sinusoidal PE (fixed, from paper)
-  2. Learned PE (torch.nn.Embedding)
-Logs train_loss, val_loss, val_BLEU and PE visualizations to W&B.
+exp4_pe_vs_learned.py  —  Section 2.4: Sinusoidal PE vs Learned PE
+
+EXPERIMENT
+  Trains Transformer with sinusoidal PE (fixed) vs learned PE (nn.Embedding).
+  Logs val BLEU once at the end (not every epoch — too slow) for comparison.
+
+THEORETICAL CHALLENGE (extrapolation)
+  After training, evaluates BLEU at 1x, 1.5x, 2x training length for both
+  models. Sinusoidal PE degrades gracefully; learned PE fails beyond seen positions.
+
+ALL W&B logging is native — zero matplotlib, zero saved images:
+  train_loss / val_loss  per epoch  →  live scalars → line charts
+  PE heatmap (50 pos x 64 dims)    →  wandb.Table + scatter
+  PE line across dims               →  wandb.plot.line
+  Final BLEU comparison             →  wandb.plot.bar
+  Loss curves overlay               →  wandb.plot.line
+  Extrapolation BLEU table          →  wandb.Table
+  Summary table                     →  wandb.Table
 """
 
-import sys
-import os
+import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import math
-import copy
 import torch
 import torch.nn as nn
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import wandb
 
 from dataset import get_dataloaders
 from model import (
-    Transformer, make_src_mask, make_tgt_mask,
+    Transformer,
     PositionwiseFeedForward, EncoderLayer, DecoderLayer,
     Encoder, Decoder,
 )
@@ -31,7 +38,7 @@ from train import LabelSmoothingLoss, run_epoch, evaluate_bleu
 from lr_scheduler import NoamScheduler
 
 
-# ── Config ───────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 BASE_CONFIG = {
     "batch_size":   64,
     "num_epochs":   10,
@@ -41,16 +48,15 @@ BASE_CONFIG = {
     "d_ff":         1024,
     "dropout":      0.1,
     "warmup_steps": 4000,
+    "max_train_len": 50,   # used for extrapolation test
 }
 
 WANDB_PROJECT = "da6401-a3"
-WANDB_API_KEY = "your_api_key_here"   # ← paste your key
+# WANDB_API_KEY = "your_key"  # uncomment if not using .netrc
 
 
 # ── Learned Positional Encoding ───────────────────────────────────────────────
 class LearnedPositionalEncoding(nn.Module):
-    """Learnable positional embeddings via nn.Embedding."""
-
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
         self.dropout   = nn.Dropout(p=dropout)
@@ -58,34 +64,29 @@ class LearnedPositionalEncoding(nn.Module):
         nn.init.normal_(self.embedding.weight, mean=0, std=0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        seq_len = x.size(1)
+        seq_len   = x.size(1)
         positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
         return self.dropout(x + self.embedding(positions))
 
 
 # ── Transformer with learned PE ───────────────────────────────────────────────
 class TransformerLearnedPE(nn.Module):
-    """Full Transformer but with learned positional embeddings."""
-
     def __init__(self, src_vocab_size, tgt_vocab_size, config):
         super().__init__()
-        d_model   = config["d_model"]
-        N         = config["N"]
-        num_heads = config["num_heads"]
-        d_ff      = config["d_ff"]
-        dropout   = config["dropout"]
+        d_model, N, num_heads = config["d_model"], config["N"], config["num_heads"]
+        d_ff, dropout         = config["d_ff"],    config["dropout"]
 
         self.src_embedding       = nn.Embedding(src_vocab_size, d_model)
         self.tgt_embedding       = nn.Embedding(tgt_vocab_size, d_model)
         self.positional_encoding = LearnedPositionalEncoding(d_model, dropout)
         self.d_model             = d_model
 
-        enc_layer    = EncoderLayer(d_model, num_heads, d_ff, dropout)
-        dec_layer    = DecoderLayer(d_model, num_heads, d_ff, dropout)
-        self.encoder  = Encoder(enc_layer, N)
-        self.decoder  = Decoder(dec_layer, N)
+        enc_layer      = EncoderLayer(d_model, num_heads, d_ff, dropout)
+        dec_layer      = DecoderLayer(d_model, num_heads, d_ff, dropout)
+        self.encoder   = Encoder(enc_layer, N)
+        self.decoder   = Decoder(dec_layer, N)
         self.generator = nn.Linear(d_model, tgt_vocab_size)
-        self.dropout  = nn.Dropout(dropout)
+        self.dropout   = nn.Dropout(dropout)
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -107,8 +108,9 @@ class TransformerLearnedPE(nn.Module):
         return self.decode(self.encode(src, src_mask), src_mask, tgt, tgt_mask)
 
 
-# ── Sinusoidal PE visualization ───────────────────────────────────────────────
-def plot_sinusoidal_pe(d_model=256, max_len=100):
+# ── W&B PE visualization helpers (all native, no matplotlib) ─────────────────
+
+def _build_pe_matrix(d_model: int, max_len: int = 100) -> np.ndarray:
     position = torch.arange(0, max_len).unsqueeze(1).float()
     div_term = torch.exp(
         torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
@@ -116,107 +118,108 @@ def plot_sinusoidal_pe(d_model=256, max_len=100):
     pe = torch.zeros(max_len, d_model)
     pe[:, 0::2] = torch.sin(position * div_term)
     pe[:, 1::2] = torch.cos(position * div_term)
-
-    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
-
-    # Heatmap
-    im = axes[0].imshow(pe[:50, :64].numpy(), cmap="RdBu", aspect="auto",
-                         vmin=-1, vmax=1)
-    axes[0].set_xlabel("Embedding Dimension", fontsize=11)
-    axes[0].set_ylabel("Position", fontsize=11)
-    axes[0].set_title("Sinusoidal PE — Heatmap (first 50 pos, 64 dims)", fontsize=11, fontweight="bold")
-    plt.colorbar(im, ax=axes[0])
-
-    # Line plot for a few positions
-    for pos in [0, 5, 10, 20, 50]:
-        axes[1].plot(pe[pos, :64].numpy(), label=f"pos={pos}", alpha=0.8)
-    axes[1].set_xlabel("Embedding Dimension", fontsize=11)
-    axes[1].set_ylabel("PE Value", fontsize=11)
-    axes[1].set_title("Sinusoidal PE — Values Across Dimensions", fontsize=11, fontweight="bold")
-    axes[1].legend(fontsize=9)
-    axes[1].grid(alpha=0.3)
-
-    plt.tight_layout()
-    return fig
+    return pe.numpy()
 
 
-def plot_learned_pe(model, max_len=50):
-    """Visualize learned PE weights after training."""
-    weights = model.positional_encoding.embedding.weight[:max_len, :64].detach().cpu().numpy()
+def _log_pe_charts(prefix: str, matrix: np.ndarray,
+                   n_pos: int = 50, n_dim: int = 64):
+    """Log heatmap scatter + line chart for any PE matrix."""
+    mat = matrix[:n_pos, :n_dim]
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+    # 1. Heatmap as flat table + scatter (colour by pe_value in W&B UI)
+    hm_table = wandb.Table(columns=["position", "dim", "pe_value"])
+    for p in range(n_pos):
+        for d in range(n_dim):
+            hm_table.add_data(int(p), int(d), float(mat[p, d]))
 
-    im = axes[0].imshow(weights, cmap="RdBu", aspect="auto", vmin=-0.1, vmax=0.1)
-    axes[0].set_xlabel("Embedding Dimension", fontsize=11)
-    axes[0].set_ylabel("Position", fontsize=11)
-    axes[0].set_title("Learned PE — Heatmap (first 50 pos, 64 dims)", fontsize=11, fontweight="bold")
-    plt.colorbar(im, ax=axes[0])
+    wandb.log({
+        f"{prefix}/heatmap_table": hm_table,
+        f"{prefix}/heatmap_scatter": wandb.plot.scatter(
+            hm_table, x="dim", y="position",
+            title=f"{prefix} — heatmap (colour=pe_value, first {n_pos} pos x {n_dim} dims)",
+        ),
+    })
 
-    for pos in [0, 5, 10, 20, 50]:
-        if pos < max_len:
-            axes[1].plot(weights[pos, :64], label=f"pos={pos}", alpha=0.8)
-    axes[1].set_xlabel("Embedding Dimension", fontsize=11)
-    axes[1].set_ylabel("PE Value", fontsize=11)
-    axes[1].set_title("Learned PE — Values Across Dimensions", fontsize=11, fontweight="bold")
-    axes[1].legend(fontsize=9)
-    axes[1].grid(alpha=0.3)
+    # 2. Line chart: pe_value across dims for 5 positions
+    selected   = [0, 5, 10, 20, min(n_pos - 1, 49)]
+    line_table = wandb.Table(columns=["dim", "pe_value", "position"])
+    for pos in selected:
+        for d in range(n_dim):
+            line_table.add_data(int(d), float(mat[pos, d]), f"pos={pos}")
 
-    plt.tight_layout()
-    return fig
-
-
-def plot_bleu_comparison(results):
-    """Bar chart comparing BLEU scores."""
-    fig, ax = plt.subplots(figsize=(8, 5))
-    methods = list(results.keys())
-    bleus   = list(results.values())
-    colors  = ["#2196F3", "#FF9800"]
-
-    bars = ax.bar(methods, bleus, color=colors, width=0.4, edgecolor="black", linewidth=0.8)
-    for bar, val in zip(bars, bleus):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                f"{val:.2f}", ha="center", va="bottom", fontsize=12, fontweight="bold")
-
-    ax.set_ylabel("BLEU Score", fontsize=12)
-    ax.set_title("Sinusoidal PE vs Learned PE — Validation BLEU", fontsize=13, fontweight="bold")
-    ax.set_ylim(0, max(bleus) * 1.2)
-    ax.grid(axis="y", alpha=0.4)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    plt.tight_layout()
-    return fig
+    wandb.log({
+        f"{prefix}/line_across_dims": wandb.plot.line(
+            line_table, x="dim", y="pe_value", stroke="position",
+            title=f"{prefix} — PE values across embedding dimensions",
+        ),
+    })
 
 
-def plot_loss_curves(history_sin, history_learned):
-    """Overlay loss curves for both methods."""
-    epochs = range(len(history_sin["train"]))
+def log_sinusoidal_pe_charts(d_model: int):
+    pe_matrix = _build_pe_matrix(d_model, max_len=100)
+    _log_pe_charts("sinusoidal_pe", pe_matrix)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    # Cosine similarity between adjacent positions — shows smooth structure
+    # that enables extrapolation (report evidence for theoretical challenge)
+    sim_table = wandb.Table(columns=["position", "cosine_sim_to_next"])
+    for i in range(99):
+        v1  = pe_matrix[i]
+        v2  = pe_matrix[i + 1]
+        cos = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+        sim_table.add_data(i, cos)
 
-    # Train loss
-    axes[0].plot(epochs, history_sin["train"],    "b-o", label="Sinusoidal PE", markersize=4)
-    axes[0].plot(epochs, history_learned["train"],"r-s", label="Learned PE",    markersize=4)
-    axes[0].set_xlabel("Epoch", fontsize=11)
-    axes[0].set_ylabel("Loss", fontsize=11)
-    axes[0].set_title("Training Loss", fontsize=12, fontweight="bold")
-    axes[0].legend(fontsize=10)
-    axes[0].grid(alpha=0.3)
+    wandb.log({
+        "sinusoidal_pe/adjacent_position_similarity": wandb.plot.line(
+            sim_table, x="position", y="cosine_sim_to_next",
+            title="Sinusoidal PE — cosine similarity between adjacent positions "
+                  "(smooth beyond training length = extrapolation)",
+        )
+    })
 
-    # Val loss
-    axes[1].plot(epochs, history_sin["val"],    "b-o", label="Sinusoidal PE", markersize=4)
-    axes[1].plot(epochs, history_learned["val"],"r-s", label="Learned PE",    markersize=4)
-    axes[1].set_xlabel("Epoch", fontsize=11)
-    axes[1].set_ylabel("Loss", fontsize=11)
-    axes[1].set_title("Validation Loss", fontsize=12, fontweight="bold")
-    axes[1].legend(fontsize=10)
-    axes[1].grid(alpha=0.3)
 
-    plt.suptitle("Sinusoidal PE vs Learned PE — Loss Curves", fontsize=13, fontweight="bold")
-    plt.tight_layout()
-    return fig
+def log_learned_pe_charts(model: TransformerLearnedPE, max_len: int = 100):
+    weights = (
+        model.positional_encoding.embedding.weight[:max_len, :]
+        .detach().cpu().numpy()
+    )
+    _log_pe_charts("learned_pe", weights)
+
+
+# ── Extrapolation test ────────────────────────────────────────────────────────
+
+def log_extrapolation_table(model_sin, model_learned,
+                             test_loader, tgt_vocab, device,
+                             train_max_len: int):
+    """
+    Evaluate both models at 1x, 1.5x, 2x training sequence length.
+    Sinusoidal: sin/cos defined for all positions -> graceful degradation.
+    Learned:    embedding rows beyond train_max_len were never trained -> fails.
+    """
+    multipliers  = [1.0, 1.5, 2.0]
+    extrap_table = wandb.Table(
+        columns=["max_len", "length_multiplier",
+                 "sinusoidal_bleu", "learned_bleu", "bleu_drop_learned"]
+    )
+
+    print("\n── Extrapolation test ───────────────────────────────────────────")
+    for mult in multipliers:
+        eval_len = int(train_max_len * mult)
+        print(f"  max_len={eval_len} ({mult}x training length)...")
+
+        bleu_sin = evaluate_bleu(model_sin,     test_loader, tgt_vocab,
+                                 device=device, max_len=eval_len)
+        bleu_lrn = evaluate_bleu(model_learned, test_loader, tgt_vocab,
+                                 device=device, max_len=eval_len)
+        drop = bleu_sin - bleu_lrn
+        print(f"    Sinusoidal={bleu_sin:.2f}  Learned={bleu_lrn:.2f}  "
+              f"Drop={drop:+.2f}")
+        extrap_table.add_data(eval_len, mult, bleu_sin, bleu_lrn, drop)
+
+    wandb.log({"extrapolation/bleu_vs_length_table": extrap_table})
 
 
 # ── Training helper ───────────────────────────────────────────────────────────
+
 def train_model(run_name, model, config, device,
                 train_loader, val_loader, test_loader,
                 src_vocab, tgt_vocab):
@@ -235,41 +238,53 @@ def train_model(run_name, model, config, device,
     history = {"train": [], "val": []}
     best_val = float("inf")
 
-    print(f"\n{'='*50}\n  {run_name}\n{'='*50}")
+    print(f"\n{'='*55}\n  {run_name}\n{'='*55}")
     for epoch in range(config["num_epochs"]):
-        train_loss = run_epoch(train_loader, model, loss_fn, optimizer, scheduler,
-                               epoch, is_train=True,  device=device)
-        val_loss   = run_epoch(val_loader,   model, loss_fn, None,      None,
-                               epoch, is_train=False, device=device)
+        train_loss = run_epoch(
+            train_loader, model, loss_fn, optimizer, scheduler,
+            epoch, is_train=True, device=device,
+        )
+        val_loss = run_epoch(
+            val_loader, model, loss_fn, None, None,
+            epoch, is_train=False, device=device,
+        )
 
         history["train"].append(train_loss)
         history["val"].append(val_loss)
 
         lr = optimizer.param_groups[0]["lr"]
-        print(f"Epoch {epoch:02d}: train={train_loss:.4f}  val={val_loss:.4f}  lr={lr:.6f}")
-        wandb.log({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+        print(f"  Epoch {epoch:02d} | train={train_loss:.4f}  "
+              f"val={val_loss:.4f}  lr={lr:.6f}")
+
+        # Scalars -> W&B renders as live interactive line charts
+        wandb.log({
+            "epoch":      epoch,
+            "train_loss": train_loss,
+            "val_loss":   val_loss,
+            "lr":         lr,
+        })
 
         if val_loss < best_val:
             best_val = val_loss
 
-    # Final BLEU
-    # Attach vocab for evaluate_bleu
-    model.src_vocab    = src_vocab
-    model.tgt_vocab    = tgt_vocab
-    model.device       = device
-    bleu = evaluate_bleu(model, test_loader, tgt_vocab, device=device, max_len=50)
-    print(f"  → Final BLEU: {bleu:.2f}")
-    wandb.log({"final_bleu": bleu})
+    # ── Final BLEU on test set (once, after all epochs) ───────────────────────
+    model.src_vocab = src_vocab
+    model.tgt_vocab = tgt_vocab
+    model.device    = device
+    test_bleu = evaluate_bleu(
+        model, test_loader, tgt_vocab,
+        device=device, max_len=config["max_train_len"],
+    )
+    print(f"  -> Test BLEU: {test_bleu:.2f}")
+    wandb.log({"test_bleu": test_bleu})
 
-    return history, bleu
+    return history, test_bleu
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
-
-    #wandb.login(key=WANDB_API_KEY)
 
     print("Loading dataset...")
     train_loader, val_loader, test_loader, assets = get_dataloaders(
@@ -278,20 +293,18 @@ def main():
     src_vocab = assets["src_vocab"]
     tgt_vocab = assets["tgt_vocab"]
 
-    # ── Log sinusoidal PE visualization (no training needed) ──────────────────
-    run_viz = wandb.init(project=WANDB_PROJECT, name="pe-visualization", reinit=True)
-    fig_sin_pe = plot_sinusoidal_pe(d_model=BASE_CONFIG["d_model"])
-    wandb.log({"sinusoidal_pe_visualization": wandb.Image(fig_sin_pe)})
-    plt.close(fig_sin_pe)
-    run_viz.finish()
-
-    # ── Run 1: Sinusoidal PE ──────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Run 1 — Sinusoidal PE
+    # ═══════════════════════════════════════════════════════════════════════════
     run1 = wandb.init(
         project=WANDB_PROJECT,
         name="sinusoidal-pe",
         config={**BASE_CONFIG, "pe_type": "sinusoidal"},
         reinit=True,
     )
+
+    log_sinusoidal_pe_charts(d_model=BASE_CONFIG["d_model"])
+
     model_sin = Transformer(
         src_vocab_size=len(src_vocab),
         tgt_vocab_size=len(tgt_vocab),
@@ -304,20 +317,24 @@ def main():
     ).to(device)
     model_sin.src_vocab = src_vocab
     model_sin.tgt_vocab = tgt_vocab
+    model_sin.device    = device
 
     history_sin, bleu_sin = train_model(
         "Sinusoidal PE", model_sin, BASE_CONFIG, device,
-        train_loader, val_loader, test_loader, src_vocab, tgt_vocab
+        train_loader, val_loader, test_loader, src_vocab, tgt_vocab,
     )
     run1.finish()
 
-    # ── Run 2: Learned PE ─────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Run 2 — Learned PE
+    # ═══════════════════════════════════════════════════════════════════════════
     run2 = wandb.init(
         project=WANDB_PROJECT,
         name="learned-pe",
         config={**BASE_CONFIG, "pe_type": "learned"},
         reinit=True,
     )
+
     model_learned = TransformerLearnedPE(
         src_vocab_size=len(src_vocab),
         tgt_vocab_size=len(tgt_vocab),
@@ -325,53 +342,90 @@ def main():
     ).to(device)
     model_learned.src_vocab = src_vocab
     model_learned.tgt_vocab = tgt_vocab
+    model_learned.device    = device
 
     history_learned, bleu_learned = train_model(
         "Learned PE", model_learned, BASE_CONFIG, device,
-        train_loader, val_loader, test_loader, src_vocab, tgt_vocab
+        train_loader, val_loader, test_loader, src_vocab, tgt_vocab,
     )
 
-    # Visualize learned PE after training
-    fig_learned_pe = plot_learned_pe(model_learned)
-    wandb.log({"learned_pe_visualization": wandb.Image(fig_learned_pe)})
-    plt.close(fig_learned_pe)
+    log_learned_pe_charts(model_learned)
+
     run2.finish()
 
-    # ── Summary run with comparison plots ─────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Summary + Extrapolation run
+    # ═══════════════════════════════════════════════════════════════════════════
     run_summary = wandb.init(
         project=WANDB_PROJECT,
         name="pe-comparison-summary",
         reinit=True,
     )
 
-    # Loss curves overlay
-    fig_loss = plot_loss_curves(history_sin, history_learned)
-    wandb.log({"loss_curves_comparison": wandb.Image(fig_loss)})
-    plt.close(fig_loss)
-
-    # BLEU comparison bar chart
-    fig_bleu = plot_bleu_comparison({
-        "Sinusoidal PE": bleu_sin,
-        "Learned PE":    bleu_learned,
+    # BLEU bar chart
+    bar_table = wandb.Table(
+        columns=["pe_type", "test_bleu"],
+        data=[
+            ["Sinusoidal PE", bleu_sin],
+            ["Learned PE",    bleu_learned],
+        ],
+    )
+    wandb.log({
+        "comparison/bleu_bar_chart": wandb.plot.bar(
+            bar_table, label="pe_type", value="test_bleu",
+            title="Sinusoidal PE vs Learned PE — Test BLEU",
+        )
     })
-    wandb.log({"bleu_comparison": wandb.Image(fig_bleu)})
-    plt.close(fig_bleu)
+
+    # Loss curves overlay
+    loss_table = wandb.Table(columns=["epoch", "loss", "split", "pe_type"])
+    for ep, (tl, vl) in enumerate(zip(history_sin["train"], history_sin["val"])):
+        loss_table.add_data(ep, tl, "train", "sinusoidal")
+        loss_table.add_data(ep, vl, "val",   "sinusoidal")
+    for ep, (tl, vl) in enumerate(zip(history_learned["train"], history_learned["val"])):
+        loss_table.add_data(ep, tl, "train", "learned")
+        loss_table.add_data(ep, vl, "val",   "learned")
+
+    wandb.log({
+        "comparison/loss_curves": wandb.plot.line(
+            loss_table, x="epoch", y="loss", stroke="pe_type",
+            title="Sinusoidal PE vs Learned PE — Loss Curves",
+        )
+    })
+
+    # Extrapolation test (evidence for theoretical challenge in report)
+    log_extrapolation_table(
+        model_sin, model_learned,
+        test_loader, tgt_vocab, device,
+        train_max_len=BASE_CONFIG["max_train_len"],
+    )
 
     # Summary table
+    summary_table = wandb.Table(
+        columns=["pe_type", "test_bleu", "best_val_loss", "best_train_loss"],
+        data=[
+            ["sinusoidal", bleu_sin,
+             min(history_sin["val"]),     min(history_sin["train"])],
+            ["learned",    bleu_learned,
+             min(history_learned["val"]), min(history_learned["train"])],
+        ],
+    )
+    wandb.log({"comparison/summary_table": summary_table})
+
     wandb.log({
         "summary/sinusoidal_bleu": bleu_sin,
         "summary/learned_bleu":    bleu_learned,
         "summary/bleu_difference": bleu_sin - bleu_learned,
     })
 
-    print(f"\n{'='*50}")
+    print(f"\n{'='*55}")
     print(f"  Sinusoidal PE BLEU : {bleu_sin:.2f}")
     print(f"  Learned PE BLEU    : {bleu_learned:.2f}")
     print(f"  Difference         : {bleu_sin - bleu_learned:+.2f}")
-    print(f"{'='*50}")
+    print(f"{'='*55}")
 
     run_summary.finish()
-    print("\nExp 4 complete! Check wandb.ai for all plots.")
+    print("\nExp 4 complete. All charts live in wandb.ai — zero images saved.")
 
 
 if __name__ == "__main__":
